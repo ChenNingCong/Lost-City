@@ -39,12 +39,25 @@
             <p><strong>Deck Size:</strong> <span id="deck-size">?</span></p>
             <p><strong>Scores:</strong> P0: <span id="score-p0">0</span> | P1: <span id="score-p1">0</span></p>
             <p id="game-message" style="color: blue; font-weight: bold;"></p>
-            <button onclick="resetGame()">Start New Game</button>
+            <button onclick="resetGame()" style="display:block;margin: 16px 0px;">Start New Game</button>
             <label for="player-select">Viewing as:</label>
             <select id="player-select" onchange="loadGameState()">
                 <option value="0">Player 0 (You)</option>
                 <option value="1">Player 1 (Opponent)</option>
             </select>
+
+            <label for="opponent-select">Select an Opponent:</label>
+            <select id="opponent-select" onfocus="fetchPlayersIfNecessary()"
+            onchange="setOpponent()"
+                    class="block w-full py-3 px-4 border border-gray-300 bg-white rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out text-lg appearance-none">
+                    <!-- Initial static options -->
+                    <option value="" disabled selected>Select players...</option>
+                </select>
+            
+            <div id="status-message" class="mt-8 p-4 bg-indigo-50 border-l-4 border-indigo-400 text-indigo-800 rounded-lg hidden">
+                <p class="font-medium">Status:</p>
+                <p id="status-text" class="text-sm"></p>
+            </div>
         </div>
 
         <div class="board">

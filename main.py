@@ -37,6 +37,12 @@ def reset_game():
     game_server_state["env"].reset()
     return {"message": "Game reset successfully. New game started."}
 
+@app.get("/game/opponent")
+def get_opponent():
+    """Retrieves the public game state and the player's private hand."""
+    import glob
+    return [{"id" : i, 'name' : path} for i,path in enumerate(glob.glob("model/*.pkt"))]
+
 @app.get("/game/state/{player_id}")
 def get_game_state(player_id: int):
     """Retrieves the public game state and the player's private hand."""
@@ -44,6 +50,23 @@ def get_game_state(player_id: int):
     if player_id not in [0, 1]:
         raise HTTPException(status_code=400, detail="Invalid player ID.")
     return env.game.get_public_state(player_id)
+class OpponentPath(BaseModel):
+    path: str # Defines that 'path' must be in the JSON body
+
+@app.post("/game/set_opponent")
+def set_opponent(path : OpponentPath):
+    print(f"Set path {path}")
+    import torch
+    agent_state_dict = torch.load(path.path)
+    import ppo
+    from ppo import Agent, make_env
+    ppo.device = "cuda"
+    agent = Agent(envs = gym.vector.SyncVectorEnv(
+        [make_env(1,1,1,1) for i in range(1)],
+    )).cuda()
+    agent.load_state_dict(agent_state_dict)
+    env.opponent_agent = agent
+    env.reset()
 
 @app.post("/game/play")
 def handle_play_action(action: PlayAction):
@@ -70,14 +93,14 @@ def handle_play_action(action: PlayAction):
         #     draw_source=action.draw_source - 1
         # )
         card_id = game.encode_card_to_id(*card_to_play)
-        env.step(action=(card_id, ActionType.Play.value if action.action_type == 'E' else ActionType.DISCARD.value, action.draw_source))
+        action_t = (card_id, ActionType.Play.value if action.action_type == 'E' else ActionType.DISCARD.value, action.draw_source)
+        env.step(action=env._flatten_action(action_t))
         message = (f"P{player_id} played {game.COLORS[card_to_play[0]]} {card_to_play[1]} to "
                    f"{'expedition' if action.action_type == 'E' else 'discard'}. "
                    f"Drew from {'Deck' if action.draw_source == 0 else game.COLORS[action.draw_source - 1] + ' Discard'}.")
         
         if game.game_over:
             message += f" Game Over! Scores: P0: {game.scores[0]}, P1: {game.scores[1]}"
-            
         return {"message": message, "state": game.get_public_state(player_id)}
         
     except ValueError as e:

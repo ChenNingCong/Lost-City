@@ -234,7 +234,7 @@ class RandomAgent(Agent):
         self.id = id
     def act(self, obs: np.ndarray, action_mask : np.ndarray) -> int:
         action_set = action_mask.nonzero()[0]
-        return np.random.choice(action_set)
+        return int(np.random.choice(action_set))
 
 import math
 def flatten_action(action_tuple: Tuple[int, int, int], dimensions: List[int]) -> int:
@@ -301,7 +301,7 @@ class LostCitiesEnv(gym.Env):
             spaces.Discrete(2),                           # Play type 0=Expedition, 1=Discard
             spaces.Discrete(len(self.game.COLORS) + 1)    # Draw source 0=Deck, 1-5=Discard
         ))
-        self._action_dimension : List[int] = [i.n for i in self.unflatten_action_space.spaces]
+        self._action_dimension : List[int] = [int(i.n) for i in self.unflatten_action_space.spaces]
         # closed interval, so we minius one here...
         self.action_space = spaces.Discrete(math.prod(self._action_dimension))
         
@@ -413,7 +413,7 @@ class LostCitiesEnv(gym.Env):
             # Get opponent action from the provided agent function
             opponent_state = self._get_obs(1)
             # The opponent agent must return: (card_index, action_type ('E'/'D'), color_index), draw_source (0-5)
-            opponent_card_idx, opponent_play_type, opponent_draw_source = self._unflatten_action(self.opponent_agent.act(opponent_state, self.get_action_mask(1))) 
+            opponent_card_idx, opponent_play_type, opponent_draw_source = self._unflatten_action(int(self.opponent_agent.act(opponent_state, self.get_action_mask(1))))
             opponent_card = self.game.decode_card_id(opponent_card_idx)
             
             # Execute opponent's move

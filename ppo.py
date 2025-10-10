@@ -78,26 +78,66 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
+# def make_env(env_id, idx, capture_video, run_name):
+#     def thunk():
+#         if capture_video and idx == 0:
+#             env = gym.make(env_id, render_mode="rgb_array")
+#             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+#         else:
+#             env = gym.make(env_id)
+#         env = gym.wrappers.RecordEpisodeStatistics(env)
+#         return env
+
+#     return thunk
+from game import LostCitiesEnv, RandomAgent
+class TransformedEnv(LostCitiesEnv):
+    def step(self, action: int):
+        observation, reward, terminated, truncated, info = super().step(action)
+        return observation, reward / 100, terminated, truncated, info
+
+def make_single_env():
+    # we can only transform environment here
+    return TransformedEnv(RandomAgent(1))
+
 def make_env(env_id, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        return env
-
-    return thunk
-
+    # def thunk():
+    #     if capture_video and idx == 0:
+    #         env = gym.make(env_id, render_mode="rgb_array")
+    #         env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+    #     else:
+    #         env = gym.make(env_id)
+    #     env = gym.wrappers.RecordEpisodeStatistics(env)
+    #     return env
+    return make_single_env
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+import game
+from typing import *
+class CategoricalMasked(Categorical):
+    def __init__(self, probs=None, logits=None, validate_args=None, masks : Optional[torch.BoolTensor] = None):
+        self.masks = masks
+        if masks is None:
+            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
+        else:
+            _masks = masks.to(device)
+            self.masks = _masks
+            assert logits is not None
+            logits = torch.where(_masks, logits, -1e8)
+            super(CategoricalMasked, self).__init__(probs, logits, validate_args)
 
-class Agent(nn.Module):
+    def entropy(self):
+        if self.masks is None:
+            return super(CategoricalMasked, self).entropy()
+        p_log_p = self.logits * self.probs
+        p_log_p = torch.where(self.masks, p_log_p, 0)
+        return -p_log_p.sum(-1)
+
+
+class Agent(game.Agent, nn.Module):
     def __init__(self, envs):
         super().__init__()
         self.critic = nn.Sequential(
@@ -118,13 +158,38 @@ class Agent(nn.Module):
     def get_value(self, x):
         return self.critic(x)
 
-    def get_action_and_value(self, x, action=None):
-        logits = self.actor(x)
-        probs = Categorical(logits=logits)
+    def get_action_and_value(self, x, action_mask, action=None):
+        logits = self.actor(torch.tensor(x, dtype=torch.float, device=device))
+        probs = CategoricalMasked(logits=logits, masks=action_mask)
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+    
+    @torch.no_grad
+    def act(self, x, action_mask) -> int:
+        logits = self.actor(torch.tensor(x, dtype=torch.float, device=device))
+        action_mask = torch.tensor(action_mask,dtype=torch.bool,device=device)
+        probs = CategoricalMasked(logits=logits, masks=action_mask)
 
+        return int(probs.sample())
+
+def run_single_test(agent):
+    from game import LostCitiesEnv, RandomAgent
+    env = LostCitiesEnv(RandomAgent(1))
+    observation, info = env.reset()
+    terminated = False
+    total_reward = 0
+    while not terminated:
+        a = agent.act(observation, env.get_action_mask(0))
+        observation, reward, terminated, truncated, info = env.step(action = a)
+        #print(env.get_action_mask(env.game.current_player))
+        total_reward += reward
+        assert not truncated
+    return total_reward
+
+def benchmark(agent : Agent):
+    rewards = [run_single_test(agent) for i in range(100)]
+    return rewards
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -165,6 +230,10 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
+    # set up agent here.
+    for i in envs.envs:
+        i.set_opponent(agent)
+
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -174,6 +243,7 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    action_masks = torch.zeros((args.num_steps, args.num_envs) + (int(envs.single_action_space.n),), dtype=torch.bool).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -193,10 +263,11 @@ if __name__ == "__main__":
             global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
+            action_masks[step] = torch.Tensor(np.array([env.get_action_mask(0) for env in envs.envs]))
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(next_obs, action_masks[step])
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -237,6 +308,7 @@ if __name__ == "__main__":
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
+        b_action_masks = action_masks.reshape((-1, action_masks.shape[-1]))
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
@@ -247,7 +319,7 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_action_masks[mb_inds], b_actions.long()[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -305,6 +377,14 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        if iteration % 10 == 0:
+            reward = np.array(benchmark(agent))
+            writer.add_scalar("benchmark/reward_mean", reward.mean(), global_step)
+            writer.add_scalar("benchmark/reward_std", reward.std(), global_step)
+        if iteration % 50 == 0:
+            if not os.path.exists("model"):
+                os.mkdir("model")
+            torch.save(agent, f"model/{iteration}.pkt")
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
