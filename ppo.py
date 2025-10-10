@@ -36,7 +36,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 50000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
@@ -46,7 +46,7 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
+    gamma: float = 0.999
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
@@ -185,11 +185,11 @@ def run_single_test(agent):
         #print(env.get_action_mask(env.game.current_player))
         total_reward += reward
         assert not truncated
-    return total_reward
+    return total_reward, env.game._calculate_final_scores()[0]
 
 def benchmark(agent : Agent):
-    rewards = [run_single_test(agent) for i in range(100)]
-    return rewards
+    rewards_pair = [run_single_test(agent) for i in range(100)]
+    return [i[0] for i in rewards_pair], [i[1] for i in rewards_pair]
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -378,13 +378,13 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         if iteration % 10 == 0:
-            reward = np.array(benchmark(agent))
-            writer.add_scalar("benchmark/reward_mean", reward.mean(), global_step)
-            writer.add_scalar("benchmark/reward_std", reward.std(), global_step)
+            rr, ar = benchmark(agent)
+            writer.add_scalar("benchmark/relative_reward_mean", np.array(rr).mean(), global_step)
+            writer.add_scalar("benchmark/absolute_reward_mean", np.array(ar).mean(), global_step)
         if iteration % 50 == 0:
             if not os.path.exists("model"):
                 os.mkdir("model")
-            torch.save(agent, f"model/{iteration}.pkt")
+            torch.save(agent.state_dict(), f"model/{iteration}.pkt")
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
