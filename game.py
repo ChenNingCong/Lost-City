@@ -228,12 +228,12 @@ from abc import ABC, abstractmethod
 class Agent(ABC):
     env : 'LostCitiesEnv'
     @abstractmethod
-    def act(self, obs : np.ndarray) -> int:
+    def act(self, obs : np.ndarray, action_mask : np.ndarray) -> int:
         pass
 class RandomAgent(Agent):
     def __init__(self, id) -> None:
         self.id = id
-    def act(self, obs: np.ndarray) -> int:
+    def act(self, obs: np.ndarray, action_mask : np.ndarray) -> int:
         action_set = self.env.get_valid_action_set(self.id)
         return random.choice(action_set)
 
@@ -374,12 +374,15 @@ class LostCitiesEnv(gym.Env):
         info = {}
         
         return observation, info
+    def set_opponent(self, opponent : Agent):
+        self.opponent_agent = opponent
     def get_valid_action_set(self, player_id:int)->List[int]:
         return [self._flatten_action(i) for i in self.game.get_valid_actions(player_id)]
+    
     def get_action_mask(self, player_id:int):
         # Create a mask filled with zeros
         int_list = self.get_valid_action_set(player_id)
-        mask = np.zeros(int(self.action_space.n), dtype=np.uint8)
+        mask = np.zeros(int(self.action_space.n), dtype=np.bool)
         # Set the positions specified in int_list to 1
         mask[int_list] = 1
         return mask
@@ -412,7 +415,7 @@ class LostCitiesEnv(gym.Env):
             # Get opponent action from the provided agent function
             opponent_state = self._get_obs(1)
             # The opponent agent must return: (card_index, action_type ('E'/'D'), color_index), draw_source (0-5)
-            opponent_card_idx, opponent_play_type, opponent_draw_source = self._unflatten_action(self.opponent_agent.act(opponent_state)) 
+            opponent_card_idx, opponent_play_type, opponent_draw_source = self._unflatten_action(self.opponent_agent.act(opponent_state, self.get_action_mask(1))) 
             opponent_card = self.game.decode_card_id(opponent_card_idx)
             
             # Execute opponent's move
