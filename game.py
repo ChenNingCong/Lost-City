@@ -226,7 +226,6 @@ from typing import Callable, Tuple, Dict, Any, Optional
 from collections import defaultdict
 from abc import ABC, abstractmethod
 class Agent(ABC):
-    env : 'LostCitiesEnv'
     @abstractmethod
     def act(self, obs : np.ndarray, action_mask : np.ndarray) -> int:
         pass
@@ -234,8 +233,8 @@ class RandomAgent(Agent):
     def __init__(self, id) -> None:
         self.id = id
     def act(self, obs: np.ndarray, action_mask : np.ndarray) -> int:
-        action_set = self.env.get_valid_action_set(self.id)
-        return random.choice(action_set)
+        action_set = action_mask.nonzero()[0]
+        return np.random.choice(action_set)
 
 import math
 def flatten_action(action_tuple: Tuple[int, int, int], dimensions: List[int]) -> int:
@@ -295,7 +294,6 @@ class LostCitiesEnv(gym.Env):
         super().__init__()
         self.game = LostCitiesGame()
         self.opponent_agent = opponent_agent # Function for Player 1 actions
-        self.opponent_agent.env = self
         # Note: This abstract action space is HUGE and requires internal masking/logic in `step`.
         self.unflatten_action_space = spaces.Tuple((
             spaces.Discrete(len(self.game.COLORS) * self.game.UNIQUE_CARD_VALUE),   
