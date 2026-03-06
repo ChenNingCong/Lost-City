@@ -1,16 +1,18 @@
 # main.py
 
+from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import numpy as np
-from typing import Dict, Any, List, Tuple, Optional
-from game import *
 # --- FASTAPI SETUP ---
-
+from game import RandomAgent, LostCitiesEnv, ActionType
 app = FastAPI()
 env = LostCitiesEnv(RandomAgent(1))
-game_server_state = {"env": env} # Use a dictionary to hold the game instance
+@dataclass
+class GameServerState:
+    env: LostCitiesEnv
+game_server_state = GameServerState(env=env)
 
 # Configure CORS to allow frontend access
 app.add_middleware(
@@ -34,7 +36,7 @@ class PlayAction(BaseModel):
 @app.get("/game/reset")
 def reset_game():
     """Resets the game state and starts a new game."""
-    game_server_state["env"].reset()
+    game_server_state.env.reset()
     return {"message": "Game reset successfully. New game started."}
 
 @app.get("/game/opponent")
@@ -46,10 +48,10 @@ def get_opponent():
 @app.get("/game/state/{player_id}")
 def get_game_state(player_id: int):
     """Retrieves the public game state and the player's private hand."""
-    env = game_server_state["env"]
+    game = game_server_state.env.game
     if player_id not in [0, 1]:
         raise HTTPException(status_code=400, detail="Invalid player ID.")
-    return env.game.get_public_state(player_id)
+    return game.get_public_state(player_id)
 class OpponentPath(BaseModel):
     path: str # Defines that 'path' must be in the JSON body
 
@@ -58,20 +60,22 @@ def set_opponent(path : OpponentPath):
     print(f"Set path {path}")
     import torch
     agent_state_dict = torch.load(path.path)
-    import ppo
-    from ppo import Agent, make_env
-    ppo.device = "cuda"
-    agent = Agent(envs = gym.vector.SyncVectorEnv(
-        [make_env(1,1,1,1) for i in range(1)],
-    )).cuda()
+    from ppo import Agent
+    def make_agent():
+        # only use to get the action space and observation space, which are needed to initialize the agent
+        from lost_cities_env_fast2 import VecLostCitiesEnv, RandomBatchedAgent
+        fake_env = VecLostCitiesEnv(1, RandomBatchedAgent())
+        return Agent(fake_env).cuda()
+    agent = make_agent()
     agent.load_state_dict(agent_state_dict)
-    env.opponent_agent = agent
-    env.reset()
+    game_server_state.env.set_opponent(agent)
+    return {"message": f"Opponent set to model at {path.path}"}
 
 @app.post("/game/play")
 def handle_play_action(action: PlayAction):
     """Handles a player's move (play card + draw card)."""
-    game = game_server_state["env"].game
+    env = game_server_state.env
+    game = env.game
 
     if game.game_over:
         return {"message": "Game is over. Reset to start a new game."}
@@ -112,7 +116,7 @@ def handle_play_action(action: PlayAction):
 @app.get("/game/valid_actions/{player_id}")
 def get_valid_moves(player_id: int):
     """Retrieves all valid moves for the current player."""
-    game = game_server_state["env"].game
+    game = game_server_state.env.game
     if player_id != game.current_player:
         return {"message": f"It is not P{player_id}'s turn."}
     

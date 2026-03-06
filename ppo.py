@@ -97,7 +97,7 @@ class CategoricalMasked(Categorical):
         if masks is None:
             super(CategoricalMasked, self).__init__(probs, logits, validate_args)
         else:
-            _masks = masks.to(device)
+            _masks = masks.to(probs.device if probs is not None else logits.device)
             self.masks = _masks
             assert logits is not None
             logits = torch.where(_masks, logits, -1e8)
