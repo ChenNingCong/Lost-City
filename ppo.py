@@ -43,7 +43,7 @@ class Args:
     """the number of parallel game environments"""
     num_steps: int = 32
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.999
     """the discount factor gamma"""
@@ -65,7 +65,7 @@ class Args:
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
+    target_kl: float = 0.01
     """the target KL divergence threshold"""
 
     # to be filled in runtime
@@ -246,13 +246,16 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-
+    alpha = args.learning_rate
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
+            assert args.target_kl is None, "Cannot anneal learning rate when target_kl is set."
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+        if args.target_kl is not None:
+            optimizer.param_groups[0]["lr"] = alpha
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -358,7 +361,16 @@ if __name__ == "__main__":
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
-
+        # Apply adaptive learning rate adjustment based on KL divergence
+        if args.target_kl is not None:
+            # currently we just use approx_kl as a proxy to the true KL divergence
+            # but it should be sufficient for our simple environments. For more complex environments, consider using the true KL divergence.
+            global_approx_kl = approx_kl
+            if global_approx_kl > 2.0 * args.target_kl:
+                alpha = max(1e-5, alpha / 1.5)
+            elif global_approx_kl < 0.5 * args.target_kl:
+                alpha = min(1e-2, alpha * 1.5)
+    
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
