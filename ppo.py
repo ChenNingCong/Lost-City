@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-
+from lost_cities_env_fast2 import VecLostCitiesEnv, RandomBatchedAgent, BatchedAgent
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -39,7 +39,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 2048
+    num_envs: int = 128
     """the number of parallel game environments"""
     num_steps: int = 32
     """the number of steps to run in each environment per policy rollout"""
@@ -75,39 +75,14 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-
-
-# def make_env(env_id, idx, capture_video, run_name):
-#     def thunk():
-#         if capture_video and idx == 0:
-#             env = gym.make(env_id, render_mode="rgb_array")
-#             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-#         else:
-#             env = gym.make(env_id)
-#         env = gym.wrappers.RecordEpisodeStatistics(env)
-#         return env
-
-#     return thunk
-from game import LostCitiesEnv, RandomAgent
-# class TransformedEnv(LostCitiesEnv):
-#     def step(self, action: int):
-#         observation, reward, terminated, truncated, info = super().step(action)
-#         return observation, reward / 100, terminated, truncated, info
-
-# def make_single_env():
-#     # we can only transform environment here
-#     return TransformedEnv(RandomAgent(1))
-
-# def make_env(env_id, idx, capture_video, run_name):
-#     # def thunk():
-#     #     if capture_video and idx == 0:
-#     #         env = gym.make(env_id, render_mode="rgb_array")
-#     #         env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-#     #     else:
-#     #         env = gym.make(env_id)
-#     #     env = gym.wrappers.RecordEpisodeStatistics(env)
-#     #     return env
-#     return make_single_env
+    log_interval: int = 100_000
+    """the interval (in steps) at which to log training progress"""
+    save_interval: int = 500_000
+    """the interval (in steps) at which to save the model"""
+class TransformedEnv(VecLostCitiesEnv):
+    def step(self, action: int):
+        observation, reward, terminated, truncated, info = super().step(action)
+        return observation, reward / 100, terminated, truncated, info
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -135,7 +110,6 @@ class CategoricalMasked(Categorical):
         p_log_p = torch.where(self.masks, p_log_p, 0)
         return -p_log_p.sum(-1)
 
-from new_game import BatchedAgent
 class Agent(BatchedAgent, nn.Module):
     def __init__(self, envs):
         super().__init__()
@@ -246,8 +220,7 @@ if __name__ == "__main__":
     # envs = gym.vector.SyncVectorEnv(
     #     [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     # )
-    from new_game import VecLostCitiesEnv, RandomBatchedAgent
-    envs = VecLostCitiesEnv(num_envs=args.num_envs, opponent_agent=RandomBatchedAgent())
+    envs = TransformedEnv(num_envs=args.num_envs, opponent_agent=RandomBatchedAgent())
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
@@ -266,6 +239,9 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
+    # Initialize tracking variables prior to the loop
+    last_log_step = 0
+    last_save_step = 0
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
@@ -396,15 +372,20 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        if iteration % 10 == 0:
+
+
+        # Inside the training loop:
+        if global_step >= last_log_step + args.log_interval and global_step > 0:
             rr, ar = benchmark(agent)
             writer.add_scalar("benchmark/relative_reward_mean", np.array(rr).mean(), global_step)
             writer.add_scalar("benchmark/absolute_reward_mean", np.array(ar).mean(), global_step)
-        if iteration % 50 == 0:
-            if not os.path.exists("model"):
-                os.mkdir("model")
-            torch.save(agent.state_dict(), f"model/{iteration}.pkt")
-        print("SPS:", int(global_step / (time.time() - start_time)))
+            last_log_step = global_step
+
+        if global_step >= last_save_step + args.save_interval and global_step > 0:
+            os.makedirs("model", exist_ok=True)
+            torch.save(agent.state_dict(), f"model/{global_step}.pkt")
+            last_save_step = global_step
+        print(f"Step: {global_step} SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()
