@@ -11,8 +11,6 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
-
 
 @dataclass
 class Args:
@@ -24,9 +22,10 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
+    wandb: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "ppo-lost-cities"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -40,9 +39,9 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 2048
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 32
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -90,25 +89,25 @@ class Args:
 
 #     return thunk
 from game import LostCitiesEnv, RandomAgent
-class TransformedEnv(LostCitiesEnv):
-    def step(self, action: int):
-        observation, reward, terminated, truncated, info = super().step(action)
-        return observation, reward / 100, terminated, truncated, info
+# class TransformedEnv(LostCitiesEnv):
+#     def step(self, action: int):
+#         observation, reward, terminated, truncated, info = super().step(action)
+#         return observation, reward / 100, terminated, truncated, info
 
-def make_single_env():
-    # we can only transform environment here
-    return TransformedEnv(RandomAgent(1))
+# def make_single_env():
+#     # we can only transform environment here
+#     return TransformedEnv(RandomAgent(1))
 
-def make_env(env_id, idx, capture_video, run_name):
-    # def thunk():
-    #     if capture_video and idx == 0:
-    #         env = gym.make(env_id, render_mode="rgb_array")
-    #         env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-    #     else:
-    #         env = gym.make(env_id)
-    #     env = gym.wrappers.RecordEpisodeStatistics(env)
-    #     return env
-    return make_single_env
+# def make_env(env_id, idx, capture_video, run_name):
+#     # def thunk():
+#     #     if capture_video and idx == 0:
+#     #         env = gym.make(env_id, render_mode="rgb_array")
+#     #         env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+#     #     else:
+#     #         env = gym.make(env_id)
+#     #     env = gym.wrappers.RecordEpisodeStatistics(env)
+#     #     return env
+#     return make_single_env
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -136,19 +135,20 @@ class CategoricalMasked(Categorical):
         p_log_p = torch.where(self.masks, p_log_p, 0)
         return -p_log_p.sum(-1)
 
-
-class Agent(game.Agent, nn.Module):
+from new_game import BatchedAgent
+class Agent(BatchedAgent, nn.Module):
     def __init__(self, envs):
         super().__init__()
+        obs_size = np.array(envs.single_observation_space.shape).prod()
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            layer_init(nn.Linear(obs_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 1), std=1.0),
         )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            layer_init(nn.Linear(obs_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
@@ -159,19 +159,24 @@ class Agent(game.Agent, nn.Module):
         return self.critic(x)
 
     def get_action_and_value(self, x, action_mask, action=None):
-        logits = self.actor(torch.tensor(x, dtype=torch.float, device=device))
-        probs = CategoricalMasked(logits=logits, masks=action_mask)
+        logits = self.actor(x)
+        probs  = CategoricalMasked(logits=logits, masks=action_mask)
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
-    
-    @torch.no_grad
-    def act(self, x, action_mask) -> int:
-        logits = self.actor(torch.tensor(x, dtype=torch.float, device=device))
-        action_mask = torch.tensor(action_mask,dtype=torch.bool,device=device)
-        probs = CategoricalMasked(logits=logits, masks=action_mask)
 
-        return int(probs.sample())
+    @torch.no_grad()
+    def act_batch(self, obs_batch: np.ndarray, mask_batch: np.ndarray) -> np.ndarray:
+        x     = torch.tensor(obs_batch,  dtype=torch.float).cuda()
+        mask  = torch.tensor(mask_batch, dtype=torch.bool).cuda()
+        probs = CategoricalMasked(logits=self.actor(x), masks=mask)
+        actions = probs.sample().cpu().numpy()
+        return actions
+
+    @torch.no_grad()
+    def act(self, obs: np.ndarray, action_mask: np.ndarray) -> int:
+        """Single-step path — used by LostCitiesEnv (non-vectorised). Returns int."""
+        return int(self.act_batch(obs[np.newaxis], action_mask[np.newaxis])[0])
 
 def run_single_test(agent):
     from game import LostCitiesEnv, RandomAgent
@@ -193,11 +198,25 @@ def benchmark(agent : Agent):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    # patch tensorboard if not installed
+    # class DummyWriter:
+    #     def __init__(self, *args, **kwargs): pass
+    #     def add_scalar(self, *args, **kwargs): pass
+    #     def add_text(self, *args, **kwargs): pass
+    #     def close(self): pass
+    # try:
+    #     if args.track:
+    #         from torch.utils.tensorboard import SummaryWriter
+    #     else:
+    #         SummaryWriter = DummyWriter
+    # except ImportError:
+    #     SummaryWriter = DummyWriter
+    from torch.utils.tensorboard import SummaryWriter
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
+    if args.track and args.wandb:
         import wandb
 
         wandb.init(
@@ -224,15 +243,15 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
-    )
+    # envs = gym.vector.SyncVectorEnv(
+    #     [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
+    # )
+    from new_game import VecLostCitiesEnv, RandomBatchedAgent
+    envs = VecLostCitiesEnv(num_envs=args.num_envs, opponent_agent=RandomBatchedAgent())
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
-    # set up agent here.
-    for i in envs.envs:
-        i.set_opponent(agent)
+    envs.opponent = agent
 
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -263,7 +282,7 @@ if __name__ == "__main__":
             global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
-            action_masks[step] = torch.Tensor(np.array([env.get_action_mask(0) for env in envs.envs]))
+            action_masks[step] = torch.Tensor(envs.get_action_masks()).to(device)
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
