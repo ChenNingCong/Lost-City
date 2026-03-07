@@ -111,8 +111,9 @@ class CategoricalMasked(Categorical):
         return -p_log_p.sum(-1)
 
 class Agent(BatchedAgent, nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs, device="cuda"):
         super().__init__()
+        self.device = device
         obs_size = np.array(envs.single_observation_space.shape).prod()
         self.critic = nn.Sequential(
             layer_init(nn.Linear(obs_size, 64)),
@@ -141,8 +142,8 @@ class Agent(BatchedAgent, nn.Module):
 
     @torch.no_grad()
     def act_batch(self, obs_batch: np.ndarray, mask_batch: np.ndarray) -> np.ndarray:
-        x     = torch.tensor(obs_batch,  dtype=torch.float).cuda()
-        mask  = torch.tensor(mask_batch, dtype=torch.bool).cuda()
+        x     = torch.tensor(obs_batch,  dtype=torch.float).to(self.device)
+        mask  = torch.tensor(mask_batch, dtype=torch.bool).to(self.device)
         probs = CategoricalMasked(logits=self.actor(x), masks=mask)
         actions = probs.sample().cpu().numpy()
         return actions

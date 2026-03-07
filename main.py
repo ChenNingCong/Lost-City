@@ -65,7 +65,7 @@ def set_opponent(path : OpponentPath):
         # only use to get the action space and observation space, which are needed to initialize the agent
         from lost_cities_env_fast2 import VecLostCitiesEnv, RandomBatchedAgent
         fake_env = VecLostCitiesEnv(1, RandomBatchedAgent())
-        return Agent(fake_env).cuda()
+        return Agent(fake_env, device="cpu")
     agent = make_agent()
     agent.load_state_dict(agent_state_dict)
     game_server_state.env.set_opponent(agent)
