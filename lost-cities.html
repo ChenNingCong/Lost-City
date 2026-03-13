@@ -1051,7 +1051,7 @@ async function loadOpponents() {
       return num > bestNum ? p : best;
     }, allOpponents[0]);
     sel.value = largest.id;
-    return null;
+    return largest;
   } catch(e) {
     sel.innerHTML = '<option disabled>Failed to load</option>';
     showToast('Could not load opponent list.', 'error');
@@ -1098,14 +1098,14 @@ async function setOpponentAndReset() {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
-  // Load opponents list first, then restore saved opponent silently
-  const savedOpponent = await loadOpponents();
-  if (savedOpponent) {
-    // Re-apply saved opponent to server (it may have restarted)
-    await applyOpponent(savedOpponent);
-    showToast(`Opponent restored: ${savedOpponent.name}`, 'success');
+  const opponent = await loadOpponents();
+  if (opponent) {
+    localStorage.setItem(STORAGE_KEY, opponent.name);
+    const ok = await applyOpponent(opponent);
+    if (ok) await resetGame();
+  } else {
+    await loadGameState();
   }
-  await loadGameState();
 });
 </script>
 </body>

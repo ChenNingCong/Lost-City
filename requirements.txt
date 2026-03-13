@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+torch
+numpy
+pydantic
+tyro
+gymnasium
